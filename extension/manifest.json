@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Web → Figma Recorder",
+  "version": "0.6.1",
+  "description": "Ghi lại các màn hình và trạng thái hover của trang web để dựng lại trong Figma.",
+  "permissions": [
+    "debugger",
+    "storage",
+    "scripting",
+    "tabs",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Bắt đầu ghi (Alt+Shift+R)"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      }
+    },
+    "toggle-pause": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Tạm dừng / tiếp tục ghi"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "serialize.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

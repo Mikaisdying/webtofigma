@@ -1,0 +1,208 @@
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 14px 14px 12px;
+    font: 12px/1.5 Inter, system-ui, sans-serif;
+    color: var(--figma-color-text, #1e1e1e);
+    background: var(--figma-color-bg, #fff);
+  }
+  h1 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .sub { margin: 0 0 12px; color: var(--figma-color-text-secondary, #666); }
+  .drop {
+    border: 1.5px dashed var(--figma-color-border-strong, #bbb); border-radius: 8px;
+    padding: 22px 12px; text-align: center; cursor: pointer;
+  }
+  .drop:hover, .drop.over { border-color: var(--figma-color-border-brand-strong, #0d99ff); background: var(--figma-color-bg-brand-tertiary, #e5f4ff); }
+  .drop:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--figma-color-border-brand-strong, #0d99ff); outline-offset: 2px; }
+  .file { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .file b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link { border: 0; background: none; color: var(--figma-color-text-brand, #0d99ff); cursor: pointer; padding: 0; font: inherit; flex: none; }
+  .meta { color: var(--figma-color-text-secondary, #666); margin-bottom: 8px; }
+  .steps { list-style: none; margin: 0 0 10px; padding: 0; max-height: 280px; overflow-y: auto;
+    border: 1px solid var(--figma-color-border, #e6e6e6); border-radius: 8px; }
+  .steps li + li { border-top: 1px solid var(--figma-color-border, #e6e6e6); }
+  .steps label { display: grid; grid-template-columns: 16px 64px 1fr; gap: 8px; align-items: center; padding: 6px 8px; cursor: pointer; }
+  .thumb { width: 64px; height: 44px; object-fit: cover; object-position: top; border-radius: 4px;
+    border: 1px solid var(--figma-color-border, #e6e6e6); background: #fff; }
+  .name { overflow: hidden; }
+  .name b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name small { color: var(--figma-color-text-secondary, #666); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .opts { display: grid; gap: 4px; margin-bottom: 12px; }
+  .opts label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .btn { width: 100%; padding: 9px; border: 0; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--figma-color-bg-brand, #0d99ff); color: var(--figma-color-text-onbrand, #fff); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .status { margin-top: 10px; white-space: pre-line; }
+  .status.err { color: var(--figma-color-text-danger, #d32f2f); }
+  [hidden] { display: none !important; }
+</style>
+
+<h1>Web → Figma <span id="ver" style="font-weight:400;color:var(--figma-color-text-secondary,#666)"></span></h1>
+<p class="sub">Dựng phiên ghi từ extension Chrome vào page đang mở.</p>
+
+<div class="drop" id="drop" tabindex="0" role="button">Kéo thả file <b>.w2f.json</b> vào đây<br>hoặc bấm để chọn</div>
+<input type="file" id="file" accept=".json,application/json" hidden>
+
+<div id="panel" hidden>
+  <div class="file"><b id="title"></b><button class="link" id="change">Đổi file</button></div>
+  <div class="meta" id="meta"></div>
+  <div class="file"><span>Các bước sẽ dựng</span><button class="link" id="toggleAll">Bỏ chọn tất cả</button></div>
+  <ul class="steps" id="steps"></ul>
+  <div class="opts">
+    <label><input type="checkbox" id="optComp" checked> Tạo component Default / Hover / Pressed</label>
+    <label><input type="checkbox" id="optShared" checked> Gom phần lặp lại giữa các màn thành component</label>
+    <label><input type="checkbox" id="optOverlay" checked> Dựng modal và menu thành overlay</label>
+    <label><input type="checkbox" id="optProto" checked> Nối prototype theo kịch bản đã ghi</label>
+  </div>
+  <button class="btn" id="build">Dựng vào page hiện tại</button>
+</div>
+<div class="status" id="status"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let data = null, fileName = '';
+  const TRIGGER = {
+    start: 'Mở đầu phiên ghi', navigate: 'Mở trang', manual: 'Chụp tay',
+  };
+  const CHANGE = { 'modal-open': 'mở modal', 'modal-close': 'đóng modal', 'menu-open': 'mở menu', 'menu-close': 'đóng menu', screen: 'chuyển màn', navigate: 'mở trang' };
+  TRIGGER.resume = 'Tiếp tục sau tạm dừng';
+
+  function setStatus(text, err) { $('status').textContent = text; $('status').className = 'status' + (err ? ' err' : ''); fit(); }
+  function fit() { parent.postMessage({ pluginMessage: { type: 'resize', height: document.body.scrollHeight + 8 } }, '*'); }
+
+  function describe(s) {
+    const t = s.trigger || {};
+    if (t.type === 'click') return `Click "${t.text}" → ${CHANGE[t.change] || 'đổi màn'}`;
+    return TRIGGER[t.type] || '';
+  }
+
+  function svgUrl(svg) { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); }
+
+  // File bản mới gom ảnh và SVG trùng vào "assets": thay các tham chiếu "asset:<mã>" bằng nội dung thật
+  function assetUrl(v) { return v.startsWith('data:') ? v : svgUrl(v); }
+  function resolveAssets(json) {
+    const A = json.assets;
+    if (!A) return;
+    const fix = (v) => (typeof v === 'string' && v.startsWith('asset:') && A[v.slice(6)] !== undefined ? A[v.slice(6)] : v);
+    const walk = (n) => {
+      if (!n) return;
+      if (n.src) n.src = fix(n.src);
+      if (n.svg) n.svg = fix(n.svg);
+      const st = n.style;
+      if (st) {
+        if (st.bgImageData) st.bgImageData = fix(st.bgImageData);
+        if (st.bgLayer) { if (st.bgLayer.data) st.bgLayer.data = fix(st.bgLayer.data); if (st.bgLayer.svg) st.bgLayer.svg = fix(st.bgLayer.svg); }
+      }
+      (n.children || []).forEach(walk);
+    };
+    for (const st of json.steps) {
+      walk(st.root);
+      if (st.modal) st.modal.layers.forEach(walk);
+      if (st.preview) st.preview = st.preview.replace(/asset:([a-z0-9]+)/g, (m, h) => (A[h] !== undefined ? assetUrl(A[h]).replace(/&/g, '&amp;').replace(/"/g, '&quot;') : m));
+    }
+    for (const c of json.components || []) { walk(c.base); walk(c.hover); walk(c.active); }
+    delete json.assets;
+  }
+
+  function load(json, name) {
+    if (json.format !== 'web2figma-recording') {
+      if (json.page && json.root) {
+        json = { format: 'web2figma-recording', title: json.title || name, viewport: json.viewport, components: [],
+          steps: [{ id: 's1', index: 1, name: json.title || name, page: json.page, root: json.root, refMap: {}, trigger: { type: 'start' } }] };
+      } else throw new Error('bad');
+    }
+    resolveAssets(json);
+    data = json; fileName = name;
+    $('drop').hidden = true; $('panel').hidden = false;
+    $('title').textContent = data.title || name;
+    $('title').title = name;
+    const vp = data.viewport ? `${data.viewport.w}px · ` : '';
+    const links = data.transitions ? data.transitions.length : data.steps.filter((s) => s.trigger && s.trigger.type === 'click').length;
+    $('meta').textContent = `${vp}${data.steps.length} bước · ${links} lượt chuyển màn · ${(data.components || []).length} nút có hover/pressed`;
+    $('optComp').disabled = !(data.components || []).length;
+    $('optOverlay').disabled = !data.steps.some((s) => s.modal && s.modal.layers && s.modal.layers.length);
+    const ul = $('steps'); ul.innerHTML = '';
+    for (const s of data.steps) {
+      const li = document.createElement('li');
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true; cb.value = s.id;
+      cb.onchange = syncToggle;
+      const img = document.createElement('img');
+      img.className = 'thumb'; img.alt = '';
+      if (s.preview) img.src = svgUrl(s.preview);
+      const nm = document.createElement('div');
+      nm.className = 'name';
+      const b = document.createElement('b'); b.textContent = `${s.index}. ${s.name}`;
+      const sm = document.createElement('small'); sm.textContent = describe(s);
+      nm.append(b, sm);
+      label.append(cb, img, nm);
+      li.append(label); ul.append(li);
+    }
+    syncToggle();
+    setStatus('');
+  }
+
+  const boxes = () => [...document.querySelectorAll('#steps input')];
+  function syncToggle() {
+    const all = boxes(), on = all.filter((c) => c.checked).length;
+    $('toggleAll').textContent = on === all.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả';
+    $('build').disabled = on === 0;
+  }
+  $('toggleAll').onclick = () => {
+    const all = boxes(), allOn = all.every((c) => c.checked);
+    all.forEach((c) => { c.checked = !allOn; });
+    syncToggle();
+  };
+
+  async function readFile(f) {
+    try { load(JSON.parse(await f.text()), f.name); }
+    catch (e) { setStatus(`"${f.name}" không phải file của Web → Figma Recorder.`, true); }
+  }
+
+  const drop = $('drop'), file = $('file');
+  drop.onclick = () => file.click();
+  drop.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); file.click(); } };
+  file.onchange = () => { if (file.files[0]) readFile(file.files[0]); file.value = ''; };
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); };
+  $('change').onclick = () => file.click();
+
+  $('build').onclick = () => {
+    $('build').disabled = true;
+    setStatus('Đang tải font...');
+    const options = {
+      steps: boxes().filter((c) => c.checked).map((c) => c.value),
+      components: $('optComp').checked && !$('optComp').disabled,
+      prototype: $('optProto').checked,
+      shared: $('optShared').checked,
+      overlay: $('optOverlay').checked && !$('optOverlay').disabled,
+    };
+    parent.postMessage({ pluginMessage: { type: 'build', data, name: fileName, options } }, '*');
+  };
+
+  onmessage = (e) => {
+    const m = e.data.pluginMessage;
+    if (!m) return;
+    if (m.type === 'version') $('ver').textContent = 'bản ' + m.version;
+    if (m.type === 'status') setStatus(m.text);
+    if (m.type === 'progress') setStatus(`Đã tạo ${m.stats.frames} khung, ${m.stats.texts} chữ, ${m.stats.images} ảnh...`);
+    if (m.type === 'error') { setStatus('Lỗi: ' + m.text, true); $('build').disabled = false; }
+    if (m.type === 'done') {
+      const s = m.stats;
+      let t = `Xong, đã dựng vào page "${m.page}": ${s.steps - s.overlays} màn hình, ${s.overlays} overlay, ` +
+        `${s.components} component nút, ${s.shared} component dùng chung, ${s.links} liên kết prototype.`;
+      if (s.links) t += '\nBấm Present (▶) để chạy thử kịch bản.';
+      if (m.missingLinks.length) t += `\nKhông tìm thấy nút để nối: ${m.missingLinks.join(', ')}`;
+      if (s.failed) t += `\n${s.failed} phần tử không dựng được.`;
+      if (m.missingFonts.length) t += `\nThiếu font (đã thay bằng font khác): ${m.missingFonts.join(', ')}`;
+      if (s.merged) t += `\nĐã gộp ${s.merged} component trùng.`;
+      const un = Object.entries(s.unsupported || {});
+      if (un.length) t += `\nFigma không có tương đương, đã bỏ qua: ${un.map(([k, v]) => `${k} (${v} phần tử)`).join(', ')}`;
+      setStatus(t);
+      $('build').disabled = false;
+    }
+  };
+  fit();
+</script>
